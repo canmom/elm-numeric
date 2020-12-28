@@ -417,7 +417,7 @@ luDecomp a =
             ( Err string, Err "" )
 
 
-{-| Splits the lu factorized single matrix into two
+{-| Splits the LU factorized single matrix into two
 -}
 luSplit : Matnxn -> ( Matrix, Matrix )
 luSplit a =
@@ -438,7 +438,9 @@ luSplit a =
     ( l, u )
 
 
-{-| Performs lu factorization
+{-| Performs LU factorization without a pivot.
+
+The result is a single matrix that contains all elements of both L and U.
 -}
 luNoPivotSingle : Matnxn -> Matrix
 luNoPivotSingle a =
@@ -461,19 +463,28 @@ luNoPivotSingle a =
         _ ->
             lu
 
+{-| Generates a list of pairs of indices, going first through rows, then through columns
 
+i.e. (1, 1), (2, 1), (3, 1) ... (i_range, 1), (2, 1), (2, 2) ... (i_range, j_range)
+-}
 genIndices : ( Int, Int ) -> List ( Int, Int )
 genIndices ( i_range, j_range ) =
     let
         listj =
-            List.concat <| List.map (List.repeat i_range) <| List.range 1 j_range
+            List.range 1 j_range
+            |> List.map (List.repeat i_range)
+            |> List.concat
 
         listi =
-            List.concat <| List.repeat j_range (List.range 1 i_range)
+            List.range 1 i_range
+            |> List.repeat j_range 
+            |> List.concat 
     in
     List.map2 (\a b -> ( a, b )) listi listj
 
+{-| Update one element of the LU decomposition using Crout's algorithm, as described in _Numerical Recipes in C_ section 2.3.
 
+Designed to be bound to a matrix, i.e. no need to assume previous computation has been done. -}
 luComputeElem : ( Int, Int ) -> Matnxn -> Matnxn -> Matnxn
 luComputeElem ( i, j ) original lu =
     let
@@ -769,11 +780,9 @@ solveVBase a b =
 
 
 
-{- Applies forward and backward substitution, decoupling substitution from
+{-| Applies forward and backward substitution, decoupling substitution from
    computing lu decomp
 -}
-
-
 applySubstitution : Matrix -> Matnxn -> Matrix
 applySubstitution single b =
     let
