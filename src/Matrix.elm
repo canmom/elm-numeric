@@ -1363,11 +1363,30 @@ getRows a =
 
 
 {-| Returns the columns of a matrix in a list.
+
+Now faster, but could be faster still!
 -}
 getColumns : Matrix -> List Matrix
 getColumns a =
-    List.map vec <| to2DList (transpose a)
+    let
+        {- Turn a row vector into a column vector.-}
+        vectorTranspose : Matrix -> Matrix
+        vectorTranspose r =
+            case r of
+                Mat rnxn ->
+                    let
+                        newRows = numColumns rnxn
 
+                        newColumns = 1
+                    in
+                        Mat { rnxn | dimensions = (newRows, 1)}
+                _ ->
+                    r
+
+    in
+        transpose a
+            |> getRows
+            |> List.map vectorTranspose
 
 {-| Helper to debug print. Most useful in repl.
 
