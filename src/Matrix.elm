@@ -1340,7 +1340,26 @@ make2D num_row_elem list =
 -}
 getRows : Matrix -> List Matrix
 getRows a =
-    List.map rvec <| to2DList a
+    case a of
+        Mat m ->
+            let
+                nRows = Tuple.first m.dimensions
+
+                nColumns = Tuple.second m.dimensions
+                
+                fetchRow j =
+                    let
+                        offset = j * nColumns
+                    in
+                        Array.slice offset (offset + nColumns) m.elements
+                            |> fromArray (1, nColumns)
+
+            in
+                List.range 0 (nRows - 1)
+                    |> List.map fetchRow
+
+        _ ->
+            List.singleton a
 
 
 {-| Returns the columns of a matrix in a list.
