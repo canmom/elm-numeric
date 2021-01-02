@@ -7,6 +7,7 @@ module Matrix exposing
     , mul, vcat, hcat, get, set, transpose, determinant, det, solveV, solve, invert, inv, luDecomp, getRows, getColumns, size
     , toString, debugPrint
     , to2DList, toFlatList
+    , luPivotWrapper
     )
 
 {-| A matrix library written completely in Elm.
@@ -63,6 +64,8 @@ transposes, multiplication, and inversion.
 -}
 
 import Array
+
+--import Debug
 
 
 type alias Matnxn =
@@ -437,6 +440,237 @@ luSplit a =
     in
     ( l, u )
 
+type alias Permutation = Array.Array Int
+
+type alias LUColumn =
+    { pivotRow : Int
+    , uColumn : Array.Array Float
+    , lColumn : Array.Array Float
+    }
+
+type alias LUElements =
+    { permutation : Permutation
+    , lRows : List (Array.Array Float)
+    , uColumns : List (Array.Array Float)
+    }
+
+luPivotWrapper : Matrix -> LUElements
+luPivotWrapper m =
+    case m of
+        Mat m_ ->
+            luPivot m_
+        _ ->
+            { permutation = Array.empty
+            , lRows = []
+            , uColumns = []
+            }
+
+{- Performs LU factorization with a pivot.
+
+Algorithm based on Crout's method, as described in _Numerical Recipes in C_ section 2.3, page 46.-}
+luPivot : Matnxn -> LUElements
+luPivot a = 
+    let
+        -- first find the scaling factors for every row
+        rows =
+            getRowArrays a
+
+        n = List.length rows --assume square matrix check already done
+
+        scalingFactors =
+            getScaling rows
+
+        -- now process each column by Crout's method, while searching for the best pivot.
+        columns = transposeVectors rows n
+            |> List.map Array.toList
+
+    in
+    luOuterLoop scalingFactors columns
+
+{-| Compute scaling factors as the first stage of LU factorisation, to ensure proper implicit pivoting.
+-}
+getScaling : List (Array.Array Float) -> List Float
+getScaling m =
+    let
+        processRow : Array.Array Float -> Float
+        processRow r =
+            r
+                |> Array.map abs
+                |> Array.foldl max 0.0
+                |> (/) 1
+    in
+    List.map processRow m
+
+{-| First inner loop for Crout's method. Computes the elements of the U matrix (above-diagonal), which do not depend on the pivot.
+
+- aColumn should be a column of the original matrix to be factorised as a list.
+- lRowsTruncated should be a list of partial rows of the work-in-progress L matrix as lists of floats
+- uColumnSoFar should be given an empty array for the initial call, and will be grown through recursive tail calls.-}
+computeLUElements : List Float -> List (List Float) -> List Float -> List Float
+computeLUElements aColumn lRowsTruncated uColumnSoFar =
+    case (aColumn, lRowsTruncated) of
+        ([],_) ->
+            -- we have reached the end of this portion of the column, meaning we should have i=j-1, so return
+            List.reverse uColumnSoFar
+
+        (_, []) ->
+            List.reverse uColumnSoFar -- required for compiler safety but should not be called
+
+        (aij :: nextAij, lRow :: nextLRow) ->
+            let
+                -- this works because uColumnSoFar only has i-1 elements, or because lRows is truncated to only j-1 elements
+                luSum = List.reverse uColumnSoFar
+                    |> List.map2 (*) lRow
+                    |> List.sum
+
+                thisElement = aij - luSum
+
+            in --should be amenable to tail call optimisations
+            computeLUElements nextAij nextLRow (thisElement :: uColumnSoFar)
+
+{-| Search a column of undivided elements in the L matrix for the highest scaled element, i.e. the best implicit pivot.
+
+- scalingFactors is the inverse of the largest element in each row.
+- lColumn is an array of work in progress elements of the L matrix, which have NOT been divided by the pivot.
+-}
+findLUPivot : List Float -> List Float -> (Int, Float)
+findLUPivot scalingFactors lColumn =
+    let
+        indexedMax : (Int, Float, Float) -> (Int, Float, Float) -> (Int, Float, Float)
+        indexedMax ((_, scaled1, _) as indexedNumber1) ((_, scaled2, _) as indexedNumber2) =
+            if scaled1 >= scaled2 then
+                indexedNumber1
+            else
+                indexedNumber2
+    in 
+    List.map2 (\s l -> (s*l, l)) scalingFactors lColumn
+        --|> Debug.log "scaled"
+        |> List.indexedMap (\i (s, l) -> (i, s, l))
+        |> List.foldl indexedMax (0, 0.0, 0.0)
+        |> (\(i, s, l) -> (i, l))
+
+{- Inner loops wrapper for Crout's method. Computes a single column of the L and U matrices and determines which row is best for pivoting
+-}
+computeLUColumn : List Float -> Int -> List Float -> List (List Float) -> LUColumn
+computeLUColumn scalingFactors j aColumn lRowsTruncated =
+    let
+        length = List.length aColumn
+
+        -- get a column of the LU matrix without doing any pivot related shenanigans
+        luColumnPrePivot = computeLUElements aColumn lRowsTruncated []
+            |> Array.fromList
+
+        --subdiagonal = Array.slice j length luColumnPrePivot
+        --    |> Debug.log "subdiagonal"
+
+        ----now figure out our best pivot
+        --pivot = findLUPivot scalingFactors (Array.toList subdiagonal)
+        --    |> Debug.log "pivot"
+
+        ----the index of the row with the best pivot in the subdiagonal list
+        --pivotRow = (Tuple.first pivot)
+
+        --luColumnPivoted =
+        --    if pivotRow /= 0 then
+        --        interchange j (pivotRow+j) luColumnPrePivot
+        --    else
+        --        luColumnPrePivot
+
+        --uColumn = Array.slice 0 (j+1) luColumnPivoted
+
+        uColumn = Array.slice 0 (j+1) luColumnPrePivot
+
+        pivot = Array.get j luColumnPrePivot
+            |> Maybe.withDefault 0.0
+
+        --pivotReciprocal = 1.0/(Tuple.second pivot)
+
+        pivotReciprocal = 1.0/pivot
+
+        --lColumn = Array.slice (j+1) length luColumnPivoted
+        lColumn = Array.slice (j+1) length luColumnPrePivot
+            |> Array.map ((*) pivotReciprocal)
+    in
+    -- we will save switching rows in the rest of the matrix for the wrapper function
+    { pivotRow = 0
+    , uColumn = uColumn
+    , lColumn = lColumn
+    }    
+
+{-| Interchange two elements in an array. Do nothing if either index out of bounds. -}
+interchange : Int -> Int -> Array.Array a -> Array.Array a
+interchange firstIndex secondIndex column =
+    let
+        first = Array.get firstIndex column
+
+        second = Array.get secondIndex column
+    in
+        case (first, second) of
+            (Just first_, Just second_) ->
+                column
+                    |> Array.set firstIndex second_
+                    |> Array.set secondIndex first_
+
+            _ ->
+                column
+
+luOuterLoop : List Float -> List (List Float) -> LUElements
+luOuterLoop scalingFactors aColumns =
+    let
+        length = List.length aColumns
+
+        unfinishedLRows = List.repeat length Array.empty
+
+        basePermutation = List.range 0 (length - 1)
+            |> Array.fromList
+    in
+    luOuterLoopKernel scalingFactors aColumns 0 [] unfinishedLRows [] basePermutation
+
+{-| Compute the pivot permutation and U and L matrices by iterating through columns of the a matrix.
+
+- scalingFactors - inverses of largest element in each row of a
+- aColumns - the matrix to be factorised
+- finishedLRows - builds up L matrix as it's calculated. initially, pass an empty list
+- unfinishedLRows -  -}
+luOuterLoopKernel : List Float -> List (List Float) -> Int -> List (Array.Array Float) -> List (Array.Array Float) -> List (Array.Array Float) -> Array.Array Int -> LUElements
+luOuterLoopKernel scalingFactors aColumns j finishedLRows unfinishedLRows uColumns permutation =
+    case aColumns of
+        [] ->
+            { permutation = permutation
+            , lRows = List.reverse finishedLRows
+            , uColumns = uColumns
+            }
+        aColumn :: nextAColumn ->
+            let
+                length = List.length aColumn
+
+                lRows = List.append (List.reverse finishedLRows) unfinishedLRows -- gross gross gross, find a way to avoid this!!
+                    |> List.map Array.toList
+
+                { pivotRow, uColumn, lColumn } = computeLUColumn scalingFactors j aColumn lRows
+
+                newUColumns = uColumn :: uColumns -- note that this counter-intuitively builds to the left! but it's efficient
+
+                -- if we need to swap rows for the pivot, do so
+                ( newPermutation, switchedLRows) =
+                    --if pivotRow /= 0 then
+                    --    ( interchange j (pivotRow + j) permutation, Array.toList (interchange 0 pivotRow (Array.fromList unfinishedLRows)) )
+                    --else
+                        (permutation, unfinishedLRows)
+
+                (newFinishedLRows, newUnfinishedLRows) =
+                    case switchedLRows of
+                        h :: t ->
+                            ( h :: finishedLRows
+                            , List.map2 Array.push (Array.toList lColumn) t
+                            )
+                        [] -> --should not reach this point in correct use
+                            ( [] , [] )
+
+            in
+                luOuterLoopKernel scalingFactors nextAColumn (j+1) newFinishedLRows newUnfinishedLRows newUColumns newPermutation
+
+
 {-| Performs LU factorization without a pivot.
 
 The result is a single matrix that contains all elements of both L and U.
@@ -483,7 +717,7 @@ genIndices ( i_range, j_range ) =
 
 {-| Update one element of the LU decomposition using Crout's algorithm, as described in _Numerical Recipes in C_ section 2.3.
 
-Designed to be bound to a matrix, i.e. no need to assume previous computation has been done. -}
+-}
 luComputeElem : ( Int, Int ) -> Matnxn -> Matnxn -> Matnxn
 luComputeElem ( i, j ) original lu =
     let
@@ -518,21 +752,7 @@ luComputeElem ( i, j ) original lu =
         -- NRIC 2.3.12
         setBase ( i, j ) (aij - (List.sum <| List.map compute k)) lu
 
-{-| Compute scaling factors as the first stage of LU factorisation, to ensure proper implicit pivoting.
 
-Using a list of arrays is 1. much faster (140%) and 2. more convenient
--}
-getScaling : List (Array.Array Float) -> List Float
-getScaling m =
-    let
-        processRow : Array.Array Float -> Float
-        processRow r =
-            r
-                |> Array.map abs
-                |> Array.foldl max 0.0
-                |> (/) 1
-    in
-    List.map processRow m
 
 
 {-| Get an item at index (row, column). Indices are 1-indexed.
@@ -1343,9 +1563,7 @@ make2D num_row_elem list =
                 List.take num_row_elem list :: make2D num_row_elem (List.drop num_row_elem list)
 
 
-{-| Returns the rows of a matrix in a list.
-
-As arrays to save on unwrapping.
+{-| Returns the rows of a matrix as bare arrays in a list.
 -}
 getRowArrays : Matnxn-> List (Array.Array Float)
 getRowArrays m =
@@ -1363,6 +1581,22 @@ getRowArrays m =
     in
         List.range 0 (nRows - 1)
             |> List.map fetchRow
+
+{-| Take a list of arrays representing rows (or columns) of a matrix, and transpose them.
+
+Private function with no safety checks for maximum speed. Be sure all arrays have the same length! -}
+transposeVectors : List (Array.Array Float) -> Int -> List (Array.Array Float)
+transposeVectors rowList nElements =
+    let
+        columnIndices = List.range 0 (nElements-1)
+
+        getElementFromEach : List (Array.Array Float) -> Int -> Array.Array Float
+        getElementFromEach rows colIndex =
+            rows
+                |> List.map (Array.get colIndex >> Maybe.withDefault 0.0)
+                |> Array.fromList
+    in
+    List.map (getElementFromEach rowList) columnIndices
 
 {-| Returns the rows of a matrix in a list.
 -}
@@ -1382,22 +1616,15 @@ getColumns a =
     case a of
         Mat anxn ->
             let
-                rowList = getRowArrays anxn
+                rows = getRowArrays anxn
 
                 nColumns = numColumns anxn
 
                 nRows = numRows anxn
 
-                columnIndices = List.range 0 (nColumns-1)
-
-                getElementFromEach : List (Array.Array Float) -> Int -> Matrix
-                getElementFromEach rows colIndex =
-                    rows
-                        |> List.map (Array.get colIndex >> Maybe.withDefault 0.0)
-                        |> Array.fromList
-                        |> fromArray (nRows, 1)
+                columns = transposeVectors rows nColumns
             in
-            List.map (getElementFromEach rowList) columnIndices
+            List.map (fromArray (nRows, 1)) columns
         _ ->
             []
 
