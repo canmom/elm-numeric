@@ -103,7 +103,9 @@ interchangeListRecursivelyKernel index1 index2 scan1 scan2 initial middle =
                 head :: tail ->
                     interchangeListRecursivelyKernel (index1 - 1) (index2 - 1) tail tail (head :: initial) middle
 
-{-| Split a list in two, with the first n elements being returned in reverse order. Faster in the specific situation where you want to reverse the list. -}
+{-| Split a list in two, with the first n elements being returned in reverse order.
+
+Faster in the specific situation where you are happy to reverse that half, e.g. you are going to also reverse the second half with a `mapReverse`. -}
 splitReverse : Int -> List a -> (List a, List a)
 splitReverse n list =
     splitKernel n [] list
@@ -116,7 +118,7 @@ splitKernel n front back =
         _ ->
             case back of
                 [] ->
-                    (List.reverse front, [])
+                    (front, back)
                 head :: tail ->
                     splitKernel (n-1) (head :: front) tail
 

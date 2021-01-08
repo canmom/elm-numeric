@@ -7,7 +7,8 @@ module Matrix exposing
     , mul, vcat, hcat, get, set, transpose, determinant, det, solveV, solve, invert, inv, luDecomp, getRows, getColumns, size
     , toString, debugPrint
     , to2DList, toFlatList
-    , computeLUElements, computeLUElementsOld
+    , computeLUElements, computeLUElementsAndFindPivot
+    , computeLUColumn
     )
 
 {-| A matrix library written completely in Elm.
@@ -512,7 +513,7 @@ Since it will be convenient later, elements are returned in reverse order.
 - aColumn should be a column of the original matrix to be factorised as a list.
 - lRowsTruncated should be a list of full/partial rows of the work-in-progress L matrix as lists of floats, in backwards order
 -}
-computeLUElements : List Float -> List (List Float) -> Int -> {elementsReversed : List Float, pivotIndex: Int, pivotValue: Float)
+computeLUElements : List Float -> List (List Float) -> Int -> List Float
 computeLUElements aColumn lRowsTruncated j =
     computeLUElementsKernel aColumn lRowsTruncated [] [] 0 j
 
@@ -540,80 +541,100 @@ computeLUElementsKernel aColumn lRowsTruncated uColumnSoFar partialUColumn i j =
         _ -> -- end of iteration, we're out of aijs to iterate over
             uColumnSoFar
 
-{-| Search a column of undivided elements in the L matrix for the highest scaled element, i.e. the best implicit pivot.
+{-| First inner loop for Crout's method. Computes the elements of the U matrix (above-diagonal), which do not depend on the pivot.
 
-- scalingFactors is the inverse of the largest element in each row.
-- lColumn is an array of work in progress elements of the L matrix, which have NOT been divided by the pivot.
+Since it will be convenient later, elements are returned in reverse order.
+
+- aColumn should be a column of the original matrix to be factorised as a list.
+- lRowsTruncated should be a list of full/partial rows of the work-in-progress L matrix as lists of floats, whose elements must be in backwards order!
 -}
-findLUPivot : List Float -> List Float -> (Int, Float)
-findLUPivot scalingFactors lColumn =
-    let
-        indexedMax : (Int, Float, Float) -> (Int, Float, Float) -> (Int, Float, Float)
-        indexedMax ((_, scaled1, _) as indexedNumber1) ((_, scaled2, _) as indexedNumber2) =
-            if scaled1 >= scaled2 then
-                indexedNumber1
-            else
-                indexedNumber2
-    in 
-    List.map2 (\s l -> (s*l, l)) scalingFactors lColumn
-        --|> Debug.log "scaled"
-        |> List.indexedMap (\i (s, l) -> (i, s, l))
-        |> List.foldl indexedMax (0, 0.0, 0.0)
-        |> (\(i, s, l) -> (i, l))
+computeLUElementsAndFindPivot : List Float -> List (List Float) -> List Float -> Int -> {elementsReversed : List Float, pivotIndex: Int, pivotValue: Float}
+computeLUElementsAndFindPivot aColumn lRowsTruncated scaleFactors j =
+    computeLUElementsAndFindPivotKernel aColumn lRowsTruncated scaleFactors [] [] 0 j 0 0.0 0.0
 
-{- Inner loops wrapper for Crout's method. Computes a single column of the L and U matrices
+computeLUElementsAndFindPivotKernel : List Float -> List (List Float) -> List Float -> List Float -> List Float -> Int -> Int -> Int -> Float -> Float -> {elementsReversed : List Float, pivotIndex: Int, pivotValue: Float}
+computeLUElementsAndFindPivotKernel aColumn lRowsTruncated scaleFactors uColumnSoFar partialUColumn i j bestPivotIndex bestPivotValue bestPivotValueScaled =
+    case (aColumn, lRowsTruncated, scaleFactors) of
+        (aij :: nextAij, lRow :: nextLRow, scaleFactor :: nextScaleFactor) ->
+            let
+                -- this works because partialUColumn only has min(i-1, j-1) elements
+                luSum = Utils.map2foldl (*) (+) partialUColumn lRow 0
+
+                thisElement = aij - luSum
+
+                nextUColumn = thisElement :: uColumnSoFar
+
+                nextPartial = -- the "partial U column" is the first j-1 elements of the U column after we progress past this point. we just keep it around.
+                    if i >= j then
+                        partialUColumn
+                    else
+                        nextUColumn
+
+                thisElementScaled = abs(thisElement) * scaleFactor
+
+                (nextBestPivotIndex, nextBestPivotValue, nextBestPivotValueScaled) =
+                    if i >= j && thisElementScaled > bestPivotValueScaled then
+                        (i, thisElement, thisElementScaled)
+                    else
+                        (bestPivotIndex, bestPivotValue, bestPivotValueScaled)
+
+            in --tail call loop
+            computeLUElementsAndFindPivotKernel nextAij nextLRow nextScaleFactor nextUColumn nextPartial (i+1) j nextBestPivotIndex nextBestPivotValue nextBestPivotValueScaled
+
+        _ -> -- end of iteration, we're out of aijs to iterate over.
+            { elementsReversed = uColumnSoFar,  pivotIndex = bestPivotIndex, pivotValue = bestPivotValue}
+
+{- Inner loops wrapper for Crout's method. Computes a single column of the L and U matrices and splits it into L and U parts.
+
+Inputs:
+ - j: the index of the column being iterated over
+ - finalJ: N-1, i.e. 1 less than the dimension of the matrix
+ - scalingFactors: a list of scaling factors for implicit pivoting
+ - aColumn: the values of the a matrix in the column being iterated over
+ - lRowsReversed: a list of previously computed values in the L matrix. The elements of each one should be in reverse order.
+
+Outputs:
+- pivotRow: the index of the pivot row in a reversed list of elements
+- uColumn: the elements of this column of the U matrix in reverse order
+- lColumn: the elements of this column of the L matrix in reverse order
 -}
-computeLUColumn : List Float -> Int -> List Float -> List (List Float) -> LUColumn
-computeLUColumn scalingFactorsReversed j aColumn lRowsTruncated =
+computeLUColumn : Int -> Int -> List Float -> List Float -> List (List Float) -> LUColumn
+computeLUColumn j finalIndex scalingFactors aColumn lRowsReversed =
     let
-        length = List.length aColumn
-
         -- get a column of the LU matrix without doing any pivot related shenanigans
-        elementsReversed = computeLUElements aColumn lRowsTruncated j
+        {elementsReversed, pivotIndex, pivotValue} = computeLUElementsAndFindPivot aColumn lRowsReversed scalingFactors j
 
-        -- get all but the first j elements of the column we calculated
-        subdiagonal = List.take (length-j) elementsReversed
-            --|> Debug.log "subdiagonal"
-
-        -- get all but the first j elements of the scaling factors
-        scalingFactorsSublist = List.take (length-j) scalingFactorsReversed
-
-        --now figure out our best pivot
-        (pivotIndex, pivotVal) = findLUPivot scalingFactorsSublist subdiagonal
-
-        pivotReciprocal = 1.0/pivotVal
+        pivotReciprocal = 1.0/pivotValue
 
         elementsReverseSwapped =
-            if pivotIndex /= (length-j) then --if there's a better pivot than the one on this
-                Utils.interchangeList (length-j) pivotIndex elementsReversed
+            if pivotIndex /= j then --if there's a better pivot than the one on this row
+                Utils.interchangeList (finalIndex-j) (finalIndex-pivotIndex) elementsReversed
             else
                 elementsReversed
 
-        (uColumn, lColumnUndivided) = Utils.splitReverse (length-j-1) elementsReverseSwapped
+        (lColumnUndivided, uColumn) = Utils.splitReverse (finalIndex - j) elementsReverseSwapped
     in
     -- we will save switching rows in the rest of the matrix for the wrapper function
-    { pivotRow = 0
+    { pivotRow = pivotIndex
     , uColumn = uColumn
     , lColumn = Utils.mapReverse ((*) pivotReciprocal) lColumnUndivided
     }
 
---luOuterLoop : List Float -> List (List Float) -> LUElements
---luOuterLoop scalingFactors aColumns =
+--luOuterLoop : Int -> List Float -> List (List Float) -> LUElements
+--luOuterLoop n scalingFactors aColumns =
 --    let
---        length = List.length aColumns
-
---        unfinishedLRows = List.repeat length []
+--        unfinishedLRows = List.repeat n []
 --    in
---    luOuterLoopKernel scalingFactors aColumns 0 [] unfinishedLRows [] []
+--    luOuterLoopKernel 0 n scalingFactors aColumns [] unfinishedLRows [] []
 
-{- Compute the pivot permutation and U and L matrices by iterating through columns of the a matrix.
+--{- Compute the pivot permutation and U and L matrices by iterating through columns of the a matrix.
 
-- scalingFactors - inverses of largest element in each row of a
-- aColumns - the matrix to be factorised
-- finishedLRows - builds up L matrix as it's calculated. initially, pass an empty list
-- unfinishedLRows -  -}
---luOuterLoopKernel : List Float -> List (List Float) -> Int -> List (List Float) -> List (List Float) -> List (List Float) -> List Int -> LUElements
---luOuterLoopKernel scalingFactors aColumns j finishedLRows unfinishedLRows uColumns permutation =
+--- scalingFactors - inverses of largest element in each row of a
+--- aColumns - the matrix to be factorised
+--- finishedLRows - builds up L matrix as it's calculated. initially, pass an empty list
+--- unfinishedLRows -  -}
+--luOuterLoopKernel : Int -> Int -> List Float -> List (List Float) -> List (List Float) -> List (List Float) -> List (List Float) -> List Int -> LUElements
+--luOuterLoopKernel j n scalingFactors aColumns finishedLRows unfinishedLRows uColumns permutation =
 --    case aColumns of
 --        [] ->
 --            { permutation = List.reverse permutation
@@ -625,9 +646,8 @@ computeLUColumn scalingFactorsReversed j aColumn lRowsTruncated =
 --                length = List.length aColumn
 
 --                lRows = List.append (List.reverse finishedLRows) unfinishedLRows -- gross gross gross, find a way to avoid this!!
---                    |> List.map Array.toList
 
---                { pivotRow, uColumn, lColumn } = computeLUColumn scalingFactors j aColumn lRows
+--                { pivotRow, uColumn, lColumn } = computeLUColumn scalingFactorsaColumn lRows
 
 --                newUColumns = uColumn :: uColumns -- note that this counter-intuitively builds to the left! but it's efficient
 
