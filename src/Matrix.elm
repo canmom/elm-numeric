@@ -1079,6 +1079,49 @@ forwardSubstitution i l b y =
     in
     setBase ( i, 1 ) yi y
 
+{-| Perform forward subsitution using the rows of the L matrix, each written backwards as a list of floats.
+
+Since L diagonal is all 1s, we can avoid division by lii.
+
+The elements of y are returned in backwards order.-}
+forwardSubstitutionAlt : List (List Float) -> List Float -> List Float
+forwardSubstitutionAlt lRowsReversed b =
+    forwardSubstitutionLoop lRowsReversed b []
+
+forwardSubstitutionLoop : List (List Float) -> List Float -> List Float -> List Float
+forwardSubstitutionLoop lRowsReversed b ySoFar =
+    case (lRowsReversed, b) of
+        (lRow :: nextLRow, bi :: nextBi) ->
+            let
+                yi = bi - (Utils.map2foldl (*) (+) lRow ySoFar 0.0) --both the lRow and the ySoFar are in backwards order so this works
+
+            in
+            forwardSubstitutionLoop nextLRow nextBi (yi :: ySoFar)
+        _ ->
+            --we've run out of something. hopefully we've done necessary checks such that this means we're done iterating.
+            ySoFar
+
+{-| Perform backward substitution using the rows (not columns!) of the R matrix.
+
+NOTE: The elements of each R row should be in FORWARDS order, while the rows themselves should be in BACKWARDS order.
+
+The elements of yReversed should also be in backwards order.    
+-}
+backSubstitutionAlt : List (List Float) -> List Float -> List Float
+backSubstitutionAlt rRows yReversed =
+
+backSubstitutionLoop : List (List Float) -> List Float -> List FLoat -> List Float
+backSubstitutionLoop rRows yReversed xSoFar =
+    case (rRows, yReversed) of
+        ((rii :: rRowTail) :: nextRRow, yi :: nextYi) ->
+            let
+                xiUndivided = yi - (Utils.map2foldl (*) (+) rRowTail xSoFar 0.0)
+            in
+            backSubstitutionLoop nextRRow nextYi ((xiUndivided/rii) :: xSoFar)
+        _ ->
+            xSoFar
+
+
 
 {-| Perform forward substitution remembering that the diagonal of the lower lu
 matrix is all ones.
@@ -1589,6 +1632,47 @@ transposeVectors nElements rowList =
                 |> Array.fromList
     in
     List.map (getElementFromEach rowList) columnIndices
+
+transposeVectorsAlt : List (Array.Array Float) -> List (List Float)
+transposeVectorsAlt rowArrays =
+    let
+        rowLists = Utils.mapReverse (Array.toList) rowArrays
+    in
+        transposeVectorsOuter [] rowLists
+            |> List.reverse
+
+transposeVectorsOuter : List (List Float) -> List (List Float) -> List (List Float)
+transposeVectorsOuter columns unprocessedRows =
+    let
+        { column, nextRows } = transposeVectorsInner unprocessedRows [] []
+    in
+        case nextRows of
+            firstNextRow :: _ ->
+                case firstNextRow of
+                    _ :: _ ->
+                        --more elements in the first row, keep going
+                        transposeVectorsOuter (column :: columns) nextRows
+                    [] ->
+                        --iteration finished, return
+                        columns
+            [] ->
+                --somehow received an empty list of rows! don't know what to do with that! return the columns we made anyway
+                columns
+
+
+transposeVectorsInner : List (List Float) -> List Float -> List (List Float) -> { column : List Float, nextRows : List (List Float) }
+transposeVectorsInner rowLists column newRowLists
+    case rowLists of
+        (element :: rowListTail) :: nextRowList ->
+            transposeVectorsInner nextRowList (element :: column) (rowListTail :: newRowLists)
+        [] :: nextRowList ->
+            --one of the rows has turned out to be too short, i.e. it's a ragged list of lists
+            --should not get here in correct operation!
+            --other rows may be longer so write a NaN and move on
+            transposeVectorsInner nextRowList (0.0/0.0 :: column) ([] :: newRowLists)
+        [] ->
+            --we have reached the end of a column, return
+            { column = column, nextRows = newRowLists }
 
 {-| Returns the rows of a matrix in a list.
 -}
